@@ -1,0 +1,314 @@
+# .github/workflows/ci-cd.yml
+name: Full CI/CD Pipeline
+
+# Triggers for different events
+on:
+  # Run on every push to main/master
+  push:
+    branches: [main, master]
+
+  # Run on every pull request
+  pull_request:
+    branches: [main, master]
+
+  # Scheduled job - runs every night at 3 AM
+  schedule:
+    - cron: "0 3 * * *" # Runs at 3:00 AM UTC daily
+
+  # Manual trigger from GitHub UI
+  workflow_dispatch:
+
+# Environment variables shared across jobs
+env:
+  NODE_VERSION: "20"
+  AWS_REGION: "us-east-1"
+
+jobs:
+  # ============================================
+  # JOB 1: CODE QUALITY (Linting & Formatting)
+  # ============================================
+  code-quality:
+    name: 📝 Code Quality Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci # 'ci' is faster and uses package-lock.json
+
+      - name: Run ESLint (Code Quality)
+        run: npm run lint
+
+      - name: Run Prettier (Formatting Check)
+        run: npm run format:check
+
+      - name: Security Audit
+        run: npm audit --audit-level=high
+
+  # ============================================
+  # JOB 2: CROSS-PLATFORM TESTING
+  # ============================================
+  test:
+    name: 🧪 Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    needs: code-quality # Only runs if code-quality passes
+
+    # Matrix strategy: tests on 3 different OS
+    strategy:
+      fail-fast: false # Continue testing even if one OS fails
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node-version: [18, 20, 22] # Optional: test multiple Node versions
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build the app (TypeScript/Webpack)
+        run: npm run build
+
+      - name: Run Unit Tests (Jest)
+        run: npm run test:coverage
+
+      - name: Run E2E Tests (Playwright)
+        run: npm run test:e2e
+
+      - name: Upload test coverage report
+        uses: actions/upload-artifact@v4
+        if: always() # Upload even if tests fail
+        with:
+          name: coverage-${{ matrix.os }}-node${{ matrix.node-version }}
+          path: coverage/
+
+      - name: Upload Playwright screenshots on failure
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-failures-${{ matrix.os }}
+          path: test-results/
+
+  # ============================================
+  # JOB 3: BUILD PRODUCTION ASSETS
+  # ============================================
+  build:
+    name: 📦 Build Production Bundle
+    runs-on: ubuntu-latest
+    needs: test # Only runs if all tests pass
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build production assets (Vite/Webpack)
+        run: npm run build:prod
+
+      - name: Archive production build
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-build
+          path: dist/
+          retention-days: 7
+
+  # ============================================
+  # JOB 4: AUTOMATED DEPLOYMENT
+  # ============================================
+  deploy:
+    name: 🚀 Deploy to Production
+    runs-on: ubuntu-latest
+    needs: build # Only runs if build succeeds
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    # Environment with approval protection (optional)
+    environment:
+      name: production
+      url: https://your-app.com
+
+    steps:
+      - name: Download production build
+        uses: actions/download-artifact@v4
+        with:
+          name: production-build
+          path: dist/
+
+      - name: Deploy to AWS S3
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Sync to S3 bucket
+        run: |
+          aws s3 sync dist/ s3://my-app-bucket/ --delete
+
+      - name: Invalidate CloudFront cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ secrets.CLOUDFRONT_ID }} \
+            --paths "/*"
+
+      # Alternative: Deploy to Vercel
+      # - name: Deploy to Vercel
+      #   uses: amondnet/vercel-action@v20
+      #   with:
+      #     vercel-token: ${{ secrets.VERCEL_TOKEN }}
+      #     vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+      #     vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+
+  # ============================================
+  # JOB 5: RELEASE AUTOMATION
+  # ============================================
+  release:
+    name: 🏷️ Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: deploy # Only runs after successful deployment
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all history for proper versioning
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Get version from package.json
+        id: version
+        run: echo "VERSION=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.version.outputs.VERSION }}
+          name: Release v${{ steps.version.outputs.VERSION }}
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/*.js
+            dist/*.css
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to npm
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # ============================================
+  # JOB 6: SCHEDULED MAINTENANCE (Runs at 3 AM)
+  # ============================================
+  scheduled-maintenance:
+    name: 🧹 Scheduled Maintenance
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' # Only runs on cron trigger
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Clean up old Docker images
+        run: |
+          docker system prune -f --volumes
+
+      - name: Clean up old logs from server
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            find /var/log/myapp -name "*.log" -mtime +30 -delete
+            journalctl --vacuum-time=7d
+
+      - name: Send health check to monitoring
+        run: |
+          curl -X POST https://health-check-service.com/api/ping \
+            -H "Authorization: Bearer ${{ secrets.HEALTH_CHECK_TOKEN }}"
+
+  # ============================================
+  # JOB 7: ISSUE MANAGEMENT
+  # ============================================
+  issue-management:
+    name: 🏷️ Auto-label Issues/PRs
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'issues'
+
+    steps:
+      - name: Label PR by size
+        uses: actions/labeler@v5
+        with:
+          repo-token: "${{ secrets.GITHUB_TOKEN }}"
+          sync-labels: true
+
+      - name: Auto-assign reviewer
+        uses: kentaro-m/auto-assign-action@v2.0.0
+        with:
+          repo-token: "${{ secrets.GITHUB_TOKEN }}"
+          configuration-path: ".github/auto_assign.yml"
+
+      - name: Add "needs-triage" label to new issues
+        uses: actions-ecosystem/action-add-labels@v1
+        if: github.event_name == 'issues' && github.event.action == 'opened'
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          labels: needs-triage
+
+  # ============================================
+  # JOB 8: NOTIFICATIONS (Optional)
+  # ============================================
+  notify:
+    name: 📢 Send Notifications
+    runs-on: ubuntu-latest
+    needs: [test, deploy]
+    if: always() # Run regardless of success/failure
+
+    steps:
+      - name: Notify Slack on failure
+        uses: rtCamp/action-slack-notify@v2
+        if: failure()
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_MESSAGE: "❌ Pipeline failed! Check logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Notify Slack on success
+        uses: rtCamp/action-slack-notify@v2
+        if: success()
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_MESSAGE: "✅ Deployment successful! App live at: https://your-app.com"

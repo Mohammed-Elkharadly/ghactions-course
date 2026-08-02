@@ -1,0 +1,41 @@
+name: First CI
+
+age: 30
+salary: 5959.45
+user_name: Mohammed
+is_admin: true
+employment_date: 2025-02-01T14:30:00Z
+direct_manager: Mohammed
+
+serial_number: "020"
+regex: "^[0-9]"
+s_message: "hello\nworld"
+s_path: "/home/mohammed/Downloads/ghactions"
+s_quote: "it's YAML"
+
+long_message: |
+  hello
+  ahmed
+  how are you?
+
+folded_message: >
+  hello ahmed how are you?
+
+  this is a new line
+
+# A list containing two distinct user maps
+#  List of Maps (Array of Objects)
+users:
+  - name: Alice Smith
+    role: Administrator
+  - name: Bob Jones
+    role: Developer
+
+# A map containing two distinct category lists
+# Map of Lists (Object of Arrays)
+departments:
+  engineering:
+    - Alice Smith
+    - Bob Jones
+  marketing:
+    - Charlie Brown
